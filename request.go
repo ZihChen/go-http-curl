@@ -5,6 +5,7 @@ import (
 	"errors"
 	"mime/multipart"
 	"os"
+	"sync"
 	"time"
 
 	"fmt"
@@ -31,6 +32,22 @@ type Curl interface {
 	Delete() (resp *Response, err error)
 	// 使用 Patch Method 向對方請求
 	Patch() (resp *Response, err error)
+	// SetWithURL TODO: v2 設定請求網址
+	SetWithURL(url string) *Request
+	// SetWithHeader TODO: v2 設定請求 headers
+	SetWithHeader(headers map[string]string) *Request
+	// SetWithCookie TODO: v2 設定請求 cookies
+	SetWithCookie(cookies map[string]string) *Request
+	// SetWithQuery TODO: v2 設定 URL 提供的參數,將用戶自定義的 url 參數添加到 http.Request 實例上
+	SetWithQuery(queries map[string]interface{}) *Request
+	// SetWithRawData TODO: v2 設定用戶提供的 raw data
+	SetWithRawData(rawData map[string]interface{}) *Request
+	// SetWithFormData TODO: v2 設定用戶提供的 form data
+	SetWithFormData(formData map[string]interface{}) *Request
+	// SetWithLock TODO: 發起 http ConnectPool 連線請求前需先上鎖
+	SetWithLock() *Request
+	// SetWithUnlock TODO: 結束 http ConnectPool 請求後需解鎖
+	SetWithUnlock()
 }
 
 type Request struct {
@@ -45,6 +62,7 @@ type Request struct {
 	payload   io.Reader              // http request body 內容
 	cli       *http.Client           // http.Client
 	req       *http.Request          // http.Request 內容
+	mutex     *sync.Mutex            // TODO: 互斥鎖用於ConnectPool連線模式
 }
 
 // NewRequest 創建一個 Request 實例
@@ -57,6 +75,7 @@ func NewRequest(options ...func(*Request)) Curl {
 		expire:    time.Second * 60,
 		skipTLS:   true,
 		transport: &http.Transport{},
+		mutex:     &sync.Mutex{},
 	}
 
 	// running func list
@@ -345,4 +364,58 @@ func (r *Request) send() (*Response, error) {
 	}
 
 	return resp, nil
+}
+
+func (r *Request) SetWithLock() *Request {
+	r.mutex.Lock()
+	return r
+}
+
+func (r *Request) SetWithUnlock() {
+	r.mutex.Unlock()
+}
+
+func (r *Request) SetWithURL(url string) *Request {
+	r.url = url
+	return r
+}
+
+func (r *Request) SetWithHeader(headers map[string]string) *Request {
+	r.headers = headers
+	return r
+}
+
+func (r *Request) SetWithCookie(cookies map[string]string) *Request {
+	r.cookies = cookies
+	return r
+}
+
+func (r *Request) SetWithQuery(queries map[string]interface{}) *Request {
+	r.queries = queries
+	return r
+}
+
+func (r *Request) SetWithFormData(formData map[string]interface{}) *Request {
+	form := url.Values{}
+
+	for k := range formData {
+		paramV := reflect.ValueOf(formData[k])
+		if paramV.Kind() == reflect.Slice {
+			for i := 0; i < paramV.Len(); i++ {
+				value := paramV.Index(i)
+				form.Add(k, fmt.Sprint(value))
+			}
+			continue
+		}
+		form.Add(k, fmt.Sprint(paramV))
+	}
+
+	r.payload = strings.NewReader(form.Encode())
+	return r
+}
+
+func (r *Request) SetWithRawData(rawData map[string]interface{}) *Request {
+	byteData, _ := jsoniter.Marshal(rawData)
+	r.payload = strings.NewReader(string(byteData))
+	return r
 }
